@@ -594,6 +594,19 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 async def _send_bluebubbles(extra, chat_id, message):
     """Send via BlueBubbles iMessage server using the adapter's REST API."""
+    # Live in-process gateway adapter first: instantiating a standalone adapter calls
+    # connect(), which binds the webhook listener port — colliding with the running
+    # gateway (Errno 48) and double-registering webhooks. Reuse the connected adapter.
+    from gateway.config import Platform as _Platform
+    _, live_adapter = _live_adapter(_Platform.BLUEBUBBLES)
+    if live_adapter is not None:
+        try:
+            result = await live_adapter.send(chat_id, message)
+            if result.success:
+                return _success("bluebubbles", chat_id, message_id=result.message_id)
+            return _error(f"BlueBubbles send failed: {result.error}")
+        except Exception as e:
+            return _error(f"BlueBubbles send failed: {e}")
     bb, err = _gateway_platform_module("bluebubbles", unavailable="BlueBubbles adapter not available.",
                                        unmet="BlueBubbles requirements not met (need aiohttp + httpx).")
     if err:
