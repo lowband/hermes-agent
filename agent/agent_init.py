@@ -822,6 +822,41 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
+def _adopt_implicit_runtime(agent, routed_client, routed_model) -> None:
+    """Adopt the provider router's resolved runtime identity.
+
+    ``auto`` routing can resolve the configured main runtime even when a
+    direct AIAgent caller omitted both provider and model (notably
+    ``python run_agent.py``).  The router has always returned the concrete
+    model, but this path used to discard it and later send ``model: ""``
+    to an otherwise valid endpoint.  Adopt both pieces of resolved runtime
+    identity before any request kwargs or context limits are built.
+
+    Raises:
+        RuntimeError: routing succeeded but supplied no model name.
+    """
+    if not str(agent.model or "").strip():
+        agent.model = str(routed_model or "").strip()
+    if not str(agent.provider or "").strip():
+        _routed_provider = str(
+            getattr(
+                routed_client,
+                "_hermes_aux_effective_provider",
+                "",
+            )
+            or ""
+        ).strip().lower()
+        if _routed_provider:
+            agent.provider = _routed_provider
+            agent.requested_provider = _routed_provider
+    if not str(agent.model or "").strip():
+        raise RuntimeError(
+            "LLM provider resolved successfully but did not supply a "
+            "model name. Set model.default in config.yaml or pass "
+            "model= explicitly."
+        )
+
+
 def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
@@ -829,13 +864,20 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     no-provider diagnostic.
     """
     from agent.auxiliary_client import resolve_provider_client
-    _routed_client, _ = resolve_provider_client(
+    _routed_client, _routed_model = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
+        # Adopt both pieces of resolved runtime identity before any request
+        # kwargs or context limits are built (see _adopt_implicit_runtime).
+        _adopt_implicit_runtime(agent, _routed_client, _routed_model)
         from hermes_cli.providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
         if is_actual_route(effective_provider):
             agent.provider = normalize_provider(effective_provider)
+        # The first lookup ran before auto-routing had a concrete provider/model.
+        # Re-resolve now so provider-specific timeout settings apply to this
+        # implicit-runtime path too.
+        _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool
     # must not die with a misleading "No LLM provider configured"); only explicitly named
