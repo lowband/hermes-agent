@@ -43,6 +43,27 @@ def _cached_probe(agent, cache_attr: str, probe, unknown, definitive):
     return value
 
 
+def _configured_reasoning_effort_default(agent) -> dict | None:
+    """config.yaml's effective reasoning config for this agent's model, or ``None``.
+
+    A caller can hold an unset ``agent.reasoning_effort`` even though config.yaml names a level:
+    ``python run_agent.py`` builds ``AIAgent`` directly and never goes through the CLI's effort
+    resolution, so ``agent.reasoning_config`` arrives ``None``. The unset-effort default then
+    answered the profile's ``medium`` — a level a restricted OpenAI-compatible route (a vLLM
+    relay whose vocabulary is only low/high/xhigh/max/int) rejects with HTTP 400. Read the level
+    through the same chokepoint every other surface uses (per-model ``reasoning_overrides`` →
+    global ``agent.reasoning_effort``) so such a caller sends what the gateway sends.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_reasoning_config
+
+        cfg = load_config_readonly() or {}
+        return resolve_reasoning_config(cfg, str(getattr(agent, "model", "") or ""))
+    except Exception:
+        return None
+
+
 def unset_reasoning_default(agent) -> dict | None:
     """Reasoning config for a main-loop request whose ``agent.reasoning_effort`` is unset.
 
@@ -56,6 +77,12 @@ def unset_reasoning_default(agent) -> dict | None:
     """
     if getattr(agent, "api_mode", None) != "chat_completions":
         return None
+    # A configured level beats the profile default: the caller may simply never have applied the
+    # CLI's resolution (see ``_configured_reasoning_effort_default``), and an explicitly configured
+    # effort is sent verbatim on every other surface, so it is not subject to the gates below.
+    configured = _configured_reasoning_effort_default(agent)
+    if configured:
+        return configured
     provider = str(getattr(agent, "provider", "") or "")
     model = str(getattr(agent, "model", "") or "")
     try:
