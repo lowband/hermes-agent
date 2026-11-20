@@ -349,7 +349,7 @@ def _status_line_fragments(cli) -> list:
     used_left = sum(cli._status_bar_display_width(text) for _, text in left)
     used_right = sum(cli._status_bar_display_width(text) for _, text in right)
     room = width - used_left - used_right - 6
-    if field_set is None and room >= 12:  # cwd takes whatever the hints leave, trimmed from the left
+    if _on("cwd") and room >= 12:  # cwd takes whatever the hints leave, trimmed from the left
         cwd = _cwd_label()
         cwd = cwd if len(cwd) <= room else "…" + cwd[-(room - 1):]
         left += [(dim, " · "), (dim, cwd)]
